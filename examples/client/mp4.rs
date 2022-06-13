@@ -729,6 +729,7 @@ pub async fn run(opts: Opts) -> Result<(), Error> {
             .creds(creds)
             .session_group(session_group.clone())
             .user_agent("Retina mp4 example".to_owned())
+            .is_dump_msg(true)
             .teardown(opts.teardown),
     )
     .await?;

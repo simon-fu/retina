@@ -148,7 +148,7 @@ pub(super) async fn teardown_loop_forever(
             .as_mut()
             .reset(tokio::time::Instant::now() + timeout);
         let attempt = async {
-            let conn = RtspConnection::connect(&url).await?;
+            let conn = RtspConnection::connect(&url, false).await?;
             attempt(&mut req, tool.as_ref(), options, &mut requested_auth, conn).await
         };
         tokio::select! {

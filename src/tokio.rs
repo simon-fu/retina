@@ -22,16 +22,16 @@ use super::{ConnectionContext, ReceivedMessage, WallTime};
 pub(crate) struct Connection(Framed<TcpStream, Codec>);
 
 impl Connection {
-    pub(crate) async fn connect(host: Host<&str>, port: u16) -> Result<Self, std::io::Error> {
+    pub(crate) async fn connect(host: Host<&str>, port: u16, is_dump_msg: bool) -> Result<Self, std::io::Error> {
         let stream = match host {
             Host::Domain(h) => TcpStream::connect((h, port)).await,
             Host::Ipv4(h) => TcpStream::connect((h, port)).await,
             Host::Ipv6(h) => TcpStream::connect((h, port)).await,
         }?;
-        Self::from_stream(stream)
+        Self::from_stream(stream, is_dump_msg)
     }
 
-    pub(crate) fn from_stream(stream: TcpStream) -> Result<Self, std::io::Error> {
+    pub(crate) fn from_stream(stream: TcpStream, is_dump_msg: bool) -> Result<Self, std::io::Error> {
         let established_wall = WallTime::now();
         let local_addr = stream.local_addr()?;
         let peer_addr = stream.peer_addr()?;
@@ -44,6 +44,7 @@ impl Connection {
                     established_wall,
                 },
                 read_pos: 0,
+                is_dump_msg,
             },
         )))
     }
@@ -146,6 +147,8 @@ struct Codec {
 
     /// Number of bytes read and processed (drained from the input buffer).
     read_pos: u64,
+
+    is_dump_msg: bool,
 }
 
 /// An intermediate error type that exists because [`Framed`] expects the
@@ -217,6 +220,10 @@ impl Codec {
         //     doesn't have body/replace_body/map_body methods.
         let msg = match msg {
             Message::Request(msg) => {
+                if self.is_dump_msg {
+                    dump::dump_recv_req(&src[..len]);
+                }
+
                 let body_range = crate::as_range(src, msg.body());
                 let msg = msg.replace_body(rtsp_types::Empty);
                 if let Some(r) = body_range {
@@ -230,6 +237,11 @@ impl Codec {
                 }
             }
             Message::Response(msg) => {
+                if self.is_dump_msg {
+                    dump::dump_recv_rsp(&src[..len]);
+                }
+                
+
                 let body_range = crate::as_range(src, msg.body());
                 let msg = msg.replace_body(rtsp_types::Empty);
                 if let Some(r) = body_range {
@@ -271,6 +283,56 @@ impl tokio_util::codec::Decoder for Codec {
     }
 }
 
+mod dump {
+    use bytes::Bytes;
+    use rtsp_types::Message;
+
+    struct Dump<'a>(&'a rtsp_types::Message<Bytes>);
+
+    impl<'a> std::fmt::Display for Dump<'a> {
+        #[inline]
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.0.write(&mut DisplayWriter(f))
+            .map_err(|_e|std::fmt::Error{})
+        }
+    }
+    
+    // from https://stackoverflow.com/questions/61742282/struggling-to-wrap-a-fmtformatter-in-iowrite
+    struct DisplayWriter<'a, 'b>(&'a mut std::fmt::Formatter<'b>);
+    
+    impl<'a, 'b> std::io::Write for DisplayWriter<'a, 'b> {
+        #[inline]
+        fn write(&mut self, bytes: &[u8]) -> std::result::Result<usize, std::io::Error> {
+            use std::fmt::Write;
+            bytes.iter()
+                .try_for_each(|c| self.0.write_char(*c as char) )
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+    
+            Ok(bytes.len())
+        }
+        #[inline]
+        fn flush(&mut self) -> std::result::Result<(), std::io::Error> { Ok(()) }
+    }
+
+    pub fn dump_recv_req(data: &[u8]) {
+        log::info!("rtsp msg: recv request [{}]", std::str::from_utf8(data).unwrap_or_else(|_e|""));
+    }
+
+    pub fn dump_recv_rsp(data: &[u8]) {
+        log::info!("rtsp msg: recv response [{}]", std::str::from_utf8(data).unwrap_or_else(|_e|""));
+    }
+
+    pub fn dump_send(item: &Message<Bytes>) {
+        match &item {
+            Message::Request(_) => log::info!("rtsp msg: send request [{}]", Dump(&item)),
+            Message::Response(_) => log::info!("rtsp msg: send response [{}]", Dump(&item)),
+            Message::Data(_) => {},
+        }
+    }
+}
+
+
+
 impl tokio_util::codec::Encoder<rtsp_types::Message<Bytes>> for Codec {
     type Error = CodecError;
 
@@ -279,6 +341,10 @@ impl tokio_util::codec::Encoder<rtsp_types::Message<Bytes>> for Codec {
         item: rtsp_types::Message<Bytes>,
         mut dst: &mut BytesMut,
     ) -> Result<(), Self::Error> {
+        if self.is_dump_msg {
+            dump::dump_send(&item);
+        }
+
         item.write(&mut (&mut dst).writer())
             .expect("BufMut Writer is infallible");
         Ok(())
@@ -316,6 +382,7 @@ mod tests {
         let mut codec = Codec {
             ctx: ConnectionContext::dummy(),
             read_pos: 0,
+            is_dump_msg: false,
         };
         let mut buf = BytesMut::from(&b"\r\n$\x00\x00\x04asdfrest"[..]);
         codec.decode(&mut buf).unwrap();
