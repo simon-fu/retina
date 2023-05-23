@@ -513,10 +513,15 @@ impl Depacketizer {
             .ok_or_else(|| "AAC requires format specific params".to_string())?;
         let config = parse_format_specific_params(clock_rate, format_specific_params)?;
         if matches!(channels, Some(c) if c.get() != config.channels.channels) {
-            return Err(format!(
+            log::debug!(
                 "Expected RTP channels {:?} and AAC channels {:?} to match",
                 channels, config.channels
-            ));
+            );
+
+            // return Err(format!(
+            //     "Expected RTP channels {:?} and AAC channels {:?} to match",
+            //     channels, config.channels
+            // ));
         }
         Ok(Self {
             config,
