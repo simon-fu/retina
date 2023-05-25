@@ -1328,6 +1328,31 @@ impl<S: State> Session<S> {
     }
 }
 
+pub struct RtspClientConn {
+    conn: RtspConnection,
+    url: Url, 
+    options: SessionOptions,
+}
+
+impl RtspClientConn {
+    pub async fn connect(url: Url, mut options: SessionOptions) -> Result<Self, Error> {
+        let conn = RtspConnection::connect(&url, options.hook.take()).await?;
+        Ok(Self {
+            conn,
+            url,
+            options,
+        })
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.conn.inner.ctx().local_addr
+    }
+
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.conn.inner.ctx().peer_addr
+    }
+}
+
 impl Session<Described> {
     /// Creates a new session from a `DESCRIBE` request on the given URL.
     ///
@@ -1341,6 +1366,10 @@ impl Session<Described> {
     pub async fn describe(url: Url, mut options: SessionOptions) -> Result<Self, Error> {
         let conn = RtspConnection::connect(&url, options.hook.take()).await?;
         Self::describe_with_conn(conn, options, url).await
+    }
+
+    pub async fn describe_with_client_conn(conn: RtspClientConn) -> Result<Self, Error> {
+        Self::describe_with_conn(conn.conn, conn.options, conn.url).await
     }
 
     async fn describe_with_conn(
