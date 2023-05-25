@@ -39,6 +39,38 @@ pub mod rtp;
 mod teardown;
 mod timeline;
 
+// by simon
+use bytes::BytesMut;
+pub trait RtspHook: 'static + Send + Sync {
+    fn on_tcp_recv_enter(&mut self, local_addr: &std::net::SocketAddr, peer_addr: &std::net::SocketAddr, buf: &mut BytesMut);
+    fn on_tcp_recv_leave(&mut self, buf: &mut BytesMut);
+    
+    fn on_tcp_send(&mut self, local_addr: &std::net::SocketAddr, peer_addr: &std::net::SocketAddr, data: &[u8]);
+
+    fn is_dump_msg(&self) -> bool;
+    // fn on_recv_req(&mut self, data: &[u8]);
+    // fn on_recv_rsp(&mut self, data: &[u8]);
+}
+
+impl RtspHook for () {
+    fn on_tcp_recv_enter(&mut self, __local_addr: &std::net::SocketAddr, _peer_addr: &std::net::SocketAddr, _buf: &mut BytesMut) { 
+        // let data: &[u8] = &buf[..];
+    }
+
+    fn on_tcp_recv_leave(&mut self, _buf: &mut BytesMut) { }
+
+    fn on_tcp_send(&mut self, _local_addr: &std::net::SocketAddr, _peer_addr: &std::net::SocketAddr, _data: &[u8]) { }
+
+    fn is_dump_msg(&self) -> bool {false}
+
+    // fn on_recv_req(&mut self, _data: &[u8]) { }
+
+    // fn on_recv_rsp(&mut self, _data: &[u8]) { }
+}
+
+pub type BoxHook = Box<dyn RtspHook>;
+
+
 /// Duration between keepalive RTSP requests during [Playing] state.
 const KEEPALIVE_DURATION: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -410,7 +442,8 @@ pub struct SessionOptions {
     session_group: Option<Arc<SessionGroup>>,
     teardown: TeardownPolicy,
     unassigned_channel_data: UnassignedChannelDataPolicy,
-    is_dump_msg: bool,
+    // is_dump_msg: bool,
+    hook: Option<BoxHook>,
 }
 
 /// Policy for handling data received on unassigned RTSP interleaved channels.
@@ -574,8 +607,13 @@ impl SessionOptions {
         self
     }
 
-    pub fn is_dump_msg(mut self, is_dump_msg: bool) -> Self {
-        self.is_dump_msg = is_dump_msg;
+    // pub fn is_dump_msg(mut self, is_dump_msg: bool) -> Self {
+    //     self.is_dump_msg = is_dump_msg;
+    //     self
+    // }
+
+    pub fn hook(mut self, hook: BoxHook) -> Self {
+        self.hook = Some(hook);
         self
     }
 }
@@ -1018,11 +1056,11 @@ enum SessionFlag {
 }
 
 impl RtspConnection {
-    async fn connect(url: &Url, is_dump_msg: bool) -> Result<Self, Error> {
+    async fn connect(url: &Url, hook: Option<BoxHook>) -> Result<Self, Error> {
         let host =
             RtspConnection::validate_url(url).map_err(|e| wrap!(ErrorInt::InvalidArgument(e)))?;
         let port = url.port().unwrap_or(554);
-        let inner = crate::tokio::Connection::connect(host, port, is_dump_msg)
+        let inner = crate::tokio::Connection::connect(host, port, hook)
             .await
             .map_err(|e| wrap!(ErrorInt::ConnectError(e)))?;
         Ok(Self {
@@ -1300,8 +1338,8 @@ impl Session<Described> {
     /// returned from `Stream<Playing>::demuxed`.
     ///
     /// Expects to be called from a tokio runtime.
-    pub async fn describe(url: Url, options: SessionOptions) -> Result<Self, Error> {
-        let conn = RtspConnection::connect(&url, options.is_dump_msg).await?;
+    pub async fn describe(url: Url, mut options: SessionOptions) -> Result<Self, Error> {
+        let conn = RtspConnection::connect(&url, options.hook.take()).await?;
         Self::describe_with_conn(conn, options, url).await
     }
 
@@ -1968,6 +2006,10 @@ impl Session<Playing> {
         msg_ctx: &RtspMessageContext,
         data: rtsp_types::Data<Bytes>,
     ) -> Result<Option<PacketItem>, Error> {
+        // if data.channel_id() != 0 {
+        //     println!("handle_data: ch_id {}, body {:?}", data.channel_id(), crate::hex::LimitedHex::new(data.as_slice(), 32));
+        // }
+        
         let inner = self.0.as_mut().project();
         let conn = inner
             .conn
@@ -2440,8 +2482,8 @@ mod tests {
 
     async fn connect_to_mock() -> (RtspConnection, crate::tokio::Connection) {
         let (client, server) = socketpair().await;
-        let client = crate::tokio::Connection::from_stream(client, false).unwrap();
-        let server = crate::tokio::Connection::from_stream(server, false).unwrap();
+        let client = crate::tokio::Connection::from_stream(client, None).unwrap();
+        let server = crate::tokio::Connection::from_stream(server, None).unwrap();
         let client = RtspConnection {
             inner: client,
             channels: ChannelMappings::default(),

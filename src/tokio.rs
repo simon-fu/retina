@@ -14,7 +14,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio_util::codec::Framed;
 use url::Host;
 
-use crate::{Error, ErrorInt, RtspMessageContext};
+use crate::{Error, ErrorInt, RtspMessageContext, client::BoxHook};
 
 use super::{ConnectionContext, ReceivedMessage, WallTime};
 
@@ -22,16 +22,16 @@ use super::{ConnectionContext, ReceivedMessage, WallTime};
 pub(crate) struct Connection(Framed<TcpStream, Codec>);
 
 impl Connection {
-    pub(crate) async fn connect(host: Host<&str>, port: u16, is_dump_msg: bool) -> Result<Self, std::io::Error> {
+    pub(crate) async fn connect(host: Host<&str>, port: u16, hook: Option<BoxHook>) -> Result<Self, std::io::Error> {
         let stream = match host {
             Host::Domain(h) => TcpStream::connect((h, port)).await,
             Host::Ipv4(h) => TcpStream::connect((h, port)).await,
             Host::Ipv6(h) => TcpStream::connect((h, port)).await,
         }?;
-        Self::from_stream(stream, is_dump_msg)
+        Self::from_stream(stream, hook)
     }
 
-    pub(crate) fn from_stream(stream: TcpStream, is_dump_msg: bool) -> Result<Self, std::io::Error> {
+    pub(crate) fn from_stream(stream: TcpStream, hook: Option<BoxHook>) -> Result<Self, std::io::Error> {
         let established_wall = WallTime::now();
         let local_addr = stream.local_addr()?;
         let peer_addr = stream.peer_addr()?;
@@ -44,7 +44,8 @@ impl Connection {
                     established_wall,
                 },
                 read_pos: 0,
-                is_dump_msg,
+                // is_dump_msg,
+                hook: hook.unwrap_or_else(||Box::new(())),
             },
         )))
     }
@@ -148,7 +149,8 @@ struct Codec {
     /// Number of bytes read and processed (drained from the input buffer).
     read_pos: u64,
 
-    is_dump_msg: bool,
+    // is_dump_msg: bool,
+    hook: BoxHook,
 }
 
 /// An intermediate error type that exists because [`Framed`] expects the
@@ -167,6 +169,12 @@ impl std::convert::From<std::io::Error> for CodecError {
 }
 
 impl Codec {
+    #[inline]
+    fn is_dump_msg(&self) -> bool {
+        // self.is_dump_msg
+        self.hook.is_dump_msg()
+    }
+
     fn parse_msg(&self, src: &mut BytesMut) -> Result<Option<(usize, Message<Bytes>)>, CodecError> {
         // Skip whitespace as `rtsp-types` does. It's important to also do it here, or we might
         // skip the our own data message encoding (next if) then hit
@@ -220,7 +228,7 @@ impl Codec {
         //     doesn't have body/replace_body/map_body methods.
         let msg = match msg {
             Message::Request(msg) => {
-                if self.is_dump_msg {
+                if self.is_dump_msg() {
                     dump::dump_recv_req(&src[..len]);
                 }
 
@@ -237,7 +245,7 @@ impl Codec {
                 }
             }
             Message::Response(msg) => {
-                if self.is_dump_msg {
+                if self.is_dump_msg() {
                     dump::dump_recv_rsp(&src[..len]);
                 }
                 
@@ -265,9 +273,15 @@ impl tokio_util::codec::Decoder for Codec {
     type Error = CodecError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        
+        self.hook.on_tcp_recv_enter(&self.ctx.local_addr, &self.ctx.peer_addr, src);
+
         let (len, msg) = match self.parse_msg(src) {
             Err(e) => return Err(e),
-            Ok(None) => return Ok(None),
+            Ok(None) => {
+                self.hook.on_tcp_recv_leave(src);
+                return Ok(None)
+            },
             Ok(Some((len, msg))) => (len, msg),
         };
         let msg = ReceivedMessage {
@@ -279,6 +293,7 @@ impl tokio_util::codec::Decoder for Codec {
             },
         };
         self.read_pos += u64::try_from(len).expect("usize fits in u64");
+        self.hook.on_tcp_recv_leave(src);
         Ok(Some(msg))
     }
 }
@@ -341,12 +356,19 @@ impl tokio_util::codec::Encoder<rtsp_types::Message<Bytes>> for Codec {
         item: rtsp_types::Message<Bytes>,
         mut dst: &mut BytesMut,
     ) -> Result<(), Self::Error> {
-        if self.is_dump_msg {
+        if self.is_dump_msg() {
             dump::dump_send(&item);
         }
-
+        
+        let len = dst.len();
         item.write(&mut (&mut dst).writer())
             .expect("BufMut Writer is infallible");
+        
+        if dst.len() > len {
+            let data = &dst[len..];
+            self.hook.on_tcp_send(&self.ctx.local_addr, &self.ctx.peer_addr, data);
+        }
+
         Ok(())
     }
 }
@@ -382,7 +404,8 @@ mod tests {
         let mut codec = Codec {
             ctx: ConnectionContext::dummy(),
             read_pos: 0,
-            is_dump_msg: false,
+            // is_dump_msg: false,
+            hook: Box::new(()),
         };
         let mut buf = BytesMut::from(&b"\r\n$\x00\x00\x04asdfrest"[..]);
         codec.decode(&mut buf).unwrap();
