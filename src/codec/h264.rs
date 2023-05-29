@@ -17,6 +17,29 @@ use crate::{
 
 use super::VideoFrame;
 
+// by simon
+pub struct DepacketizerH264(Depacketizer);
+
+impl DepacketizerH264 {
+    #[inline]
+    pub fn new(
+        clock_rate: u32,
+        format_specific_params: Option<&str>,
+    ) -> Result<Self, String> {
+        Ok(Self(Depacketizer::new(clock_rate, format_specific_params)?))
+    }
+
+    #[inline]
+    pub fn push(&mut self, pkt: ReceivedPacket) -> Result<(), String> {
+        self.0.push(pkt)
+    }
+
+    #[inline]
+    pub fn pull(&mut self) -> Option<VideoFrame> {
+        self.0.pending.take()
+    }
+}
+
 /// A [super::Depacketizer] implementation which finds access unit boundaries
 /// and produces unfragmented NAL units as specified in [RFC
 /// 6184](https://tools.ietf.org/html/rfc6184).

@@ -247,6 +247,25 @@ impl std::fmt::Debug for ReceivedPacket {
 }
 
 impl ReceivedPacket {
+    // by simon
+    pub fn new(
+        ctx: PacketContext,
+        stream_id: usize,
+        timestamp: crate::Timestamp,
+        bytes: Bytes,
+        payload_range: Range<u16>,
+        loss: u16,
+    ) -> Self {
+        Self {
+            ctx,
+            stream_id,
+            timestamp,
+            raw: RawPacket(bytes),
+            payload_range,
+            loss,
+        }
+    }
+
     #[inline]
     pub fn timestamp(&self) -> crate::Timestamp {
         self.timestamp
