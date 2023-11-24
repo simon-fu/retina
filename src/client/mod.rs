@@ -1619,7 +1619,7 @@ impl Session<Described> {
             }
         };
         stream.state = StreamState::Init(StreamStateInit {
-            ssrc: response.ssrc,
+            ssrc: None, // response.ssrc,
             initial_seq: None,
             initial_rtptime: None,
             ctx: stream_ctx,
