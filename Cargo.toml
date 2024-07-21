@@ -26,7 +26,7 @@ pretty-hex = "0.2.1"
 rand = "0.8.3"
 rtsp-types = "0.0.3"
 # sdp-types = "0.1.4"
-sdp-types = {git="https://github.com/simon-fu/sdp-types.git", rev = "276dbe51"}
+sdp-types = {git="https://github.com/simon-fu/sdp-types.git", rev = "690ea87e"}
 smallvec = { version = "1.6.1", features = ["union"] }
 thiserror = "1.0.25"
 time = "0.1.43"
